@@ -1,0 +1,24 @@
+{
+  "originHash" : "e479ac3489d07185eea51c51786a3a0500114b37328d3a608d1cfe1093f68b67",
+  "pins" : [
+    {
+      "identity" : "barcode-reader-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Dynamsoft/barcode-reader-spm",
+      "state" : {
+        "revision" : "c2cdb3515bd75b028075ce3c08a107230f6ed3d8",
+        "version" : "11.2.5000"
+      }
+    },
+    {
+      "identity" : "capture-vision-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Dynamsoft/capture-vision-spm.git",
+      "state" : {
+        "revision" : "a806f743f3101877ea19c96d7e1f6b115b62caaa",
+        "version" : "3.2.5000"
+      }
+    }
+  ],
+  "version" : 3
+}
