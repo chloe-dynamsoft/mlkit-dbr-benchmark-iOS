@@ -2,6 +2,80 @@ import Foundation
 import SwiftUI
 import Combine
 
+// MARK: - Frame Log Entry for CSV Export
+struct FrameLogEntry {
+    let frameID: Int
+    let timestamp: Double  // seconds from video start
+    let sdkName: String
+    let success: Bool
+    let decodedText: String
+    let latencyMs: Double
+    let boundingBoxArea: Int  // 0 if no barcode found
+    
+    /// Format as CSV row
+    func toCSVRow() -> String {
+        let frameIDStr = String(format: "%04d", frameID)
+        let timestampStr = String(format: "%.3f", timestamp)
+        let successInt = success ? 1 : 0
+        let escapedText = decodedText.replacingOccurrences(of: "\"", with: "\"\"")
+        let latencyStr = String(format: "%.1f", latencyMs)
+        return "\(frameIDStr), \(timestampStr), \(sdkName), \(successInt), \"\(escapedText)\", \(latencyStr), \(boundingBoxArea)"
+    }
+    
+    static var csvHeader: String {
+        return "Frame_ID, Timestamp, SDK_Name, Success, Decoded_Text, Latency_ms, BoundingBox_Area"
+    }
+}
+
+// MARK: - CSV Logger for Video Benchmark
+class VideoBenchmarkCSVLogger {
+    private var entries: [FrameLogEntry] = []
+    private let logFileName: String
+    
+    init(videoName: String) {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
+        let timestamp = dateFormatter.string(from: Date())
+        let sanitizedVideoName = videoName.replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "/", with: "_")
+        self.logFileName = "benchmark_\(sanitizedVideoName)_\(timestamp).csv"
+    }
+    
+    func addEntry(_ entry: FrameLogEntry) {
+        entries.append(entry)
+    }
+    
+    func addEntries(_ newEntries: [FrameLogEntry]) {
+        entries.append(contentsOf: newEntries)
+    }
+    
+    func getCSVContent() -> String {
+        var csv = FrameLogEntry.csvHeader + "\n"
+        for entry in entries.sorted(by: { ($0.frameID, $0.sdkName) < ($1.frameID, $1.sdkName) }) {
+            csv += entry.toCSVRow() + "\n"
+        }
+        return csv
+    }
+    
+    func saveToFile() -> URL? {
+        let content = getCSVContent()
+        let fileURL = FileUtil.documentsDirectory.appendingPathComponent(logFileName)
+        
+        do {
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+            print("[CSV Logger] Saved benchmark log to: \(fileURL.path)")
+            return fileURL
+        } catch {
+            print("[CSV Logger] Failed to save CSV: \(error)")
+            return nil
+        }
+    }
+    
+    func getEntries() -> [FrameLogEntry] {
+        return entries
+    }
+}
+
 // MARK: - Main ViewModel
 class MainViewModel: ObservableObject {
     // Resolution setting: 0 = 720P, 1 = 1080P
@@ -22,6 +96,10 @@ class MainViewModel: ObservableObject {
     // Camera scan results (for real-time display)
     @Published var cameraScanResults: [BarcodeInfo] = []
     
+    // CSV Logger for video benchmark
+    @Published var csvLogger: VideoBenchmarkCSVLogger?
+    @Published var csvFileURL: URL?
+    
     // Selected resolution
     var selectedResolution: CameraResolution {
         resolutionIndex == 0 ? .hd720p : .fullHD1080p
@@ -32,6 +110,8 @@ class MainViewModel: ObservableObject {
         mlkitResult = nil
         cameraScanResults.removeAll()
         sourceFileName = nil
+        csvLogger = nil
+        csvFileURL = nil
     }
 }
 
@@ -63,6 +143,12 @@ class BenchmarkResult: ObservableObject, Identifiable {
     @Published var framesProcessed: Int = 0
     @Published var barcodes: [BarcodeInfo] = []
     
+    // New metrics for video benchmark
+    @Published var framesWithBarcodeVisible: Int = 0  // Total frames where barcode is visible (ground truth)
+    @Published var successfulDecodes: Int = 0         // Frames where SDK successfully decoded
+    @Published var timeToFirstReadMs: Double? = nil   // Time-to-First-Read (TTFR) in milliseconds
+    @Published var firstReadFrameIndex: Int? = nil    // Frame index of first successful read
+    
     init(engineName: String) {
         self.engineName = engineName
     }
@@ -83,6 +169,18 @@ class BenchmarkResult: ObservableObject, Identifiable {
             unique.insert(key)
         }
         return unique.count
+    }
+    
+    /// Success rate: Successful Decodes / Frames with Barcode Visible
+    var successRate: Double {
+        guard framesWithBarcodeVisible > 0 else { return 0 }
+        return Double(successfulDecodes) / Double(framesWithBarcodeVisible) * 100.0
+    }
+    
+    /// TTFR formatted string
+    var ttfrFormatted: String {
+        guard let ttfr = timeToFirstReadMs else { return "N/A" }
+        return String(format: "%.1f ms", ttfr)
     }
 }
 

@@ -151,7 +151,7 @@ class DynamsoftCameraScanner: NSObject, ObservableObject, LicenseVerificationLis
     private func setupDynamsoft() {
         // Initialize license
         print("[Dynamsoft] Initializing license...")
-        LicenseManager.initLicense("t0089pwAAAFP1JY1nkhTgtuo4LP2kPmvFFy0VMJFmO/E2omYZQCWjkLDVvJyUVeukZrhRKAHrE2KU5ZFTvdtwQ+WHeC7ZKvgD3+ojvkA+R6fXxl+1moSz7oy7Iu8=", verificationDelegate: self)
+        LicenseManager.initLicense("t0088pwAAADNYckHyPikZ2O5DtQp+Ry3yU3GHFQAzoepUNwJJDfWVm7ffMr8wicSL1OPY4LpwQ/uCKGKI3ubMCIygxwFKmIWrC/kJ5likr48/SiseX34CXV8ifA==", verificationDelegate: self)
         
         // Initialize Camera Enhancer
         print("[Dynamsoft] Creating CameraView and CameraEnhancer...")

@@ -23,7 +23,7 @@ class DynamsoftLicenseManager: NSObject, LicenseVerificationListener {
     static let shared = DynamsoftLicenseManager()
     
     // Trial license key
-    private let licenseKey = "DLS2eyJoYW5kc2hha2VDb2RlIjoiMjAwMDAxLTE2NDk4Mjk3OTI2MzUiLCJvcmdhbml6YXRpb25JRCI6IjIwMDAwMSIsInNlc3Npb25QYXNzd29yZCI6IndTcGR6Vm05WDJrcEQ5YUoifQ=="
+    private let licenseKey = "t0088pwAAADNYckHyPikZ2O5DtQp+Ry3yU3GHFQAzoepUNwJJDfWVm7ffMr8wicSL1OPY4LpwQ/uCKGKI3ubMCIygxwFKmIWrC/kJ5likr48/SiseX34CXV8ifA=="
     
     private override init() {
         super.init()

@@ -5,6 +5,13 @@ import DynamsoftCaptureVisionBundle
 import MLKitBarcodeScanning
 import MLKitVision
 
+// MARK: - Frame Data for Benchmark
+struct FrameData {
+    let image: CGImage
+    let timestamp: Double  // seconds from video start
+    let frameIndex: Int
+}
+
 struct VideoBenchmarkView: View {
     @EnvironmentObject var viewModel: MainViewModel
     @State private var selectedVideoURL: URL?
@@ -12,15 +19,13 @@ struct VideoBenchmarkView: View {
     @State private var videoThumbnail: UIImage?
     @State private var videoDuration: TimeInterval = 0
     @State private var totalFrames = 0
+    @State private var actualFrameRate: Double = 30.0
     @State private var isProcessing = false
     @State private var loadingStatus = ""
     @State private var progressValue: Double = 0
     @State private var progressDetail = ""
     @State private var showResults = false
     @State private var isCancelled = false
-    
-    // Frame extraction interval in seconds (process 2 frames per second)
-    private let frameIntervalSeconds: Double = 0.5
     
     var body: some View {
         VStack(spacing: 20) {
@@ -183,19 +188,27 @@ struct VideoBenchmarkView: View {
                 let duration = try await asset.load(.duration)
                 let durationSeconds = CMTimeGetSeconds(duration)
                 
+                // Get video track to determine actual frame rate
+                let tracks = try await asset.loadTracks(withMediaType: .video)
+                var frameRate: Double = 30.0
+                if let videoTrack = tracks.first {
+                    frameRate = Double(try await videoTrack.load(.nominalFrameRate))
+                }
+                
                 // Generate thumbnail
                 let generator = AVAssetImageGenerator(asset: asset)
                 generator.appliesPreferredTrackTransform = true
                 let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
                 let thumbnail = UIImage(cgImage: cgImage)
                 
-                // Calculate frames
-                let frames = max(1, Int(durationSeconds / frameIntervalSeconds))
+                // Calculate total frames based on actual frame rate
+                let frames = max(1, Int(durationSeconds * frameRate))
                 
                 await MainActor.run {
                     videoDuration = durationSeconds
                     videoThumbnail = thumbnail
                     totalFrames = frames
+                    actualFrameRate = frameRate
                     viewModel.sourceFileName = url.lastPathComponent
                 }
             } catch {
@@ -213,14 +226,19 @@ struct VideoBenchmarkView: View {
         viewModel.reset()
         viewModel.benchmarkMode = "video"
         
+        // Initialize CSV logger
+        let videoName = viewModel.sourceFileName ?? "unknown_video"
+        let csvLogger = VideoBenchmarkCSVLogger(videoName: videoName)
+        viewModel.csvLogger = csvLogger
+        
         Task {
             do {
-                // Extract frames
+                // Extract ALL frames from video
                 await MainActor.run {
-                    loadingStatus = "Extracting frames..."
+                    loadingStatus = "Extracting all frames..."
                 }
                 
-                let frames = try await extractFrames(from: videoURL)
+                let frames = try await extractAllFrames(from: videoURL)
                 
                 if isCancelled || frames.isEmpty {
                     await resetUI()
@@ -231,8 +249,9 @@ struct VideoBenchmarkView: View {
                 await MainActor.run {
                     loadingStatus = "Running Dynamsoft benchmark..."
                 }
-                let dynamsoftResult = await runDynamsoftVideoBenchmark(frames: frames)
+                let (dynamsoftResult, dynamsoftLogs) = await runDynamsoftVideoBenchmark(frames: frames)
                 viewModel.dynamsoftResult = dynamsoftResult
+                csvLogger.addEntries(dynamsoftLogs)
                 
                 if isCancelled {
                     await resetUI()
@@ -244,8 +263,16 @@ struct VideoBenchmarkView: View {
                     loadingStatus = "Running MLKit benchmark..."
                     progressValue = 75
                 }
-                let mlkitResult = await runMLKitVideoBenchmark(frames: frames)
+                let (mlkitResult, mlkitLogs) = await runMLKitVideoBenchmark(frames: frames)
                 viewModel.mlkitResult = mlkitResult
+                csvLogger.addEntries(mlkitLogs)
+                
+                // Save CSV file
+                if let csvURL = csvLogger.saveToFile() {
+                    await MainActor.run {
+                        viewModel.csvFileURL = csvURL
+                    }
+                }
                 
                 await MainActor.run {
                     isProcessing = false
@@ -267,87 +294,136 @@ struct VideoBenchmarkView: View {
         }
     }
     
-    private func extractFrames(from url: URL) async throws -> [CGImage] {
+    /// Extract ALL frames from the video at the native frame rate
+    private func extractAllFrames(from url: URL) async throws -> [FrameData] {
         let asset = AVAsset(url: url)
         let duration = try await asset.load(.duration)
         let durationSeconds = CMTimeGetSeconds(duration)
         
+        // Get video track for frame rate
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+        guard let videoTrack = tracks.first else {
+            throw NSError(domain: "VideoBenchmark", code: 1, userInfo: [NSLocalizedDescriptionKey: "No video track found"])
+        }
+        
+        let frameRate = Double(try await videoTrack.load(.nominalFrameRate))
+        let frameInterval = 1.0 / frameRate
+        let estimatedFrameCount = Int(durationSeconds * frameRate)
+        
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceAfter = .zero
-        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = CMTime(seconds: frameInterval / 2, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = CMTime(seconds: frameInterval / 2, preferredTimescale: 600)
         
-        var frames: [CGImage] = []
+        var frames: [FrameData] = []
         var currentTime: Double = 0
         var frameIndex = 0
+        
+        print("[Frame Extraction] Extracting all frames at \(String(format: "%.2f", frameRate)) fps, estimated \(estimatedFrameCount) frames")
         
         while currentTime < durationSeconds && !isCancelled {
             let time = CMTime(seconds: currentTime, preferredTimescale: 600)
             
             do {
                 let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
-                frames.append(cgImage)
+                let frameData = FrameData(image: cgImage, timestamp: currentTime, frameIndex: frameIndex)
+                frames.append(frameData)
             } catch {
-                print("Failed to extract frame at \(currentTime): \(error)")
+                print("Failed to extract frame \(frameIndex) at \(currentTime): \(error)")
             }
             
             frameIndex += 1
-            currentTime += frameIntervalSeconds
+            currentTime += frameInterval
             
-            let progress = Double(frameIndex * 50) / Double(totalFrames)
-            await MainActor.run {
-                progressValue = progress
-                progressDetail = "Frame \(frameIndex)/\(totalFrames)"
+            // Update progress (frame extraction is 0-40% of total progress)
+            let progress = Double(frameIndex * 40) / Double(estimatedFrameCount)
+            if frameIndex % 10 == 0 || frameIndex == estimatedFrameCount {
+                await MainActor.run {
+                    progressValue = min(progress, 40)
+                    progressDetail = "Extracting frame \(frameIndex)/\(estimatedFrameCount)"
+                }
             }
         }
         
+        print("[Frame Extraction] Extracted \(frames.count) frames")
         return frames
     }
     
-    private func runDynamsoftVideoBenchmark(frames: [CGImage]) async -> BenchmarkResult {
+    private func runDynamsoftVideoBenchmark(frames: [FrameData]) async -> (BenchmarkResult, [FrameLogEntry]) {
         let result = BenchmarkResult(engineName: "Dynamsoft")
         result.framesProcessed = frames.count
         
         var uniqueBarcodes: Set<String> = []
         var totalTime: Int64 = 0
+        var logEntries: [FrameLogEntry] = []
+        var successfulFrames = 0
+        var firstReadTime: Double? = nil
+        var firstReadFrame: Int? = nil
         
         print("[Dynamsoft Video] Starting video benchmark with \(frames.count) frames...")
         
         // Create Capture Vision Router for processing
         let cvr = CaptureVisionRouter()
         
-        for (index, frame) in frames.enumerated() {
+        for frameData in frames {
             if isCancelled { break }
             
-            let progress = 50 + Double((index + 1) * 25) / Double(frames.count)
-            await MainActor.run {
-                progressValue = progress
-                progressDetail = "Dynamsoft: Frame \(index + 1)/\(frames.count)"
+            let index = frameData.frameIndex
+            
+            // Update progress (Dynamsoft is 40-70% of total progress)
+            let progress = 40 + Double((index + 1) * 30) / Double(frames.count)
+            if index % 10 == 0 || index == frames.count - 1 {
+                await MainActor.run {
+                    progressValue = progress
+                    progressDetail = "Dynamsoft: Frame \(index + 1)/\(frames.count)"
+                }
             }
             
             let startTime = Date()
             
             // Convert CGImage to UIImage for Dynamsoft SDK
-            let uiImage = UIImage(cgImage: frame)
+            let uiImage = UIImage(cgImage: frameData.image)
             
             // Use captureFromImage API to decode barcodes
             let capturedResult = cvr.captureFromImage(uiImage, templateName: PresetTemplate.readBarcodes.rawValue)
             
-            if let decodedBarcodes = capturedResult.decodedBarcodesResult, let items = decodedBarcodes.items {
+            let endTime = Date()
+            let latencyMs = endTime.timeIntervalSince(startTime) * 1000
+            totalTime += Int64(latencyMs)
+            
+            var frameSuccess = false
+            var decodedText = ""
+            var boundingBoxArea = 0
+            
+            if let decodedBarcodes = capturedResult.decodedBarcodesResult, let items = decodedBarcodes.items, !items.isEmpty {
+                frameSuccess = true
+                successfulFrames += 1
+                
+                // Record first successful read for TTFR
+                if firstReadTime == nil {
+                    firstReadTime = frameData.timestamp * 1000  // Convert to ms
+                    firstReadFrame = index
+                }
+                
                 for item in items {
                     let key = "\(item.formatString):\(item.text)"
+                    decodedText = item.text
+                    
+                    // Calculate bounding box area from location points
+                    let location = item.location
+                    let points = location.points as? [CGPoint] ?? []
+                    if points.count >= 4 {
+                        boundingBoxArea = calculatePolygonArea(points: points)
+                    }
                     
                     if !uniqueBarcodes.contains(key) {
                         uniqueBarcodes.insert(key)
                         print("[Dynamsoft Video] Frame \(index): Barcode - \(item.formatString): \(item.text)")
                         
-                        let endTime = Date()
-                        let decodeTime = Int64(endTime.timeIntervalSince(startTime) * 1000)
-                        
                         let info = BarcodeInfo(
                             format: item.formatString,
                             text: item.text,
-                            decodeTimeMs: decodeTime,
+                            decodeTimeMs: Int64(latencyMs),
                             frameIndex: index
                         )
                         result.barcodes.append(info)
@@ -355,20 +431,54 @@ struct VideoBenchmarkView: View {
                 }
             }
             
-            let endTime = Date()
-            totalTime += Int64(endTime.timeIntervalSince(startTime) * 1000)
+            // Log entry for this frame
+            let logEntry = FrameLogEntry(
+                frameID: index,
+                timestamp: frameData.timestamp,
+                sdkName: "DBR",
+                success: frameSuccess,
+                decodedText: decodedText,
+                latencyMs: latencyMs,
+                boundingBoxArea: boundingBoxArea
+            )
+            logEntries.append(logEntry)
         }
         
         result.totalTimeMs = totalTime
-        print("[Dynamsoft Video] Video benchmark completed. Total time: \(totalTime)ms, unique barcodes: \(uniqueBarcodes.count)")
-        return result
+        result.successfulDecodes = successfulFrames
+        result.framesWithBarcodeVisible = frames.count  // Assume all frames may contain barcode
+        result.timeToFirstReadMs = firstReadTime
+        result.firstReadFrameIndex = firstReadFrame
+        
+        print("[Dynamsoft Video] Video benchmark completed. Total time: \(totalTime)ms, unique barcodes: \(uniqueBarcodes.count), successful frames: \(successfulFrames), TTFR: \(firstReadTime ?? -1)ms")
+        return (result, logEntries)
     }
     
-    private func runMLKitVideoBenchmark(frames: [CGImage]) async -> BenchmarkResult {
+    /// Calculate approximate area of a polygon given its corner points
+    private func calculatePolygonArea(points: [CGPoint]) -> Int {
+        guard points.count >= 3 else { return 0 }
+        
+        var area: CGFloat = 0
+        let n = points.count
+        
+        for i in 0..<n {
+            let j = (i + 1) % n
+            area += points[i].x * points[j].y
+            area -= points[j].x * points[i].y
+        }
+        
+        return Int(abs(area / 2))
+    }
+    
+    private func runMLKitVideoBenchmark(frames: [FrameData]) async -> (BenchmarkResult, [FrameLogEntry]) {
         let result = BenchmarkResult(engineName: "MLKit")
         result.framesProcessed = frames.count
         
         var uniqueBarcodes: Set<String> = []
+        var logEntries: [FrameLogEntry] = []
+        var successfulFrames = 0
+        var firstReadTime: Double? = nil
+        var firstReadFrame: Int? = nil
         var totalTime: Int64 = 0
         
         print("[MLKit Video] Starting video benchmark with \(frames.count) frames using Google MLKit...")
@@ -377,19 +487,24 @@ struct VideoBenchmarkView: View {
         let options = BarcodeScannerOptions(formats: [.all])
         let barcodeScanner = BarcodeScanner.barcodeScanner(options: options)
         
-        for (index, frame) in frames.enumerated() {
+        for frameData in frames {
             if isCancelled { break }
             
-            let progress = 75 + Double((index + 1) * 25) / Double(frames.count)
-            await MainActor.run {
-                progressValue = progress
-                progressDetail = "MLKit: Frame \(index + 1)/\(frames.count)"
+            let index = frameData.frameIndex
+            
+            // Update progress (MLKit is 70-100% of total progress)
+            let progress = 70 + Double((index + 1) * 30) / Double(frames.count)
+            if index % 10 == 0 || index == frames.count - 1 {
+                await MainActor.run {
+                    progressValue = progress
+                    progressDetail = "MLKit: Frame \(index + 1)/\(frames.count)"
+                }
             }
             
             let startTime = Date()
             
             // Convert CGImage to UIImage for MLKit
-            let uiImage = UIImage(cgImage: frame)
+            let uiImage = UIImage(cgImage: frameData.image)
             let visionImage = VisionImage(image: uiImage)
             visionImage.orientation = uiImage.imageOrientation
             
@@ -406,35 +521,70 @@ struct VideoBenchmarkView: View {
                 }
             }
             
+            let endTime = Date()
+            let latencyMs = endTime.timeIntervalSince(startTime) * 1000
+            totalTime += Int64(latencyMs)
+            
+            var frameSuccess = false
+            var decodedText = ""
+            var boundingBoxArea = 0
+            
+            if !barcodes.isEmpty {
+                frameSuccess = true
+                successfulFrames += 1
+                
+                // Record first successful read for TTFR
+                if firstReadTime == nil {
+                    firstReadTime = frameData.timestamp * 1000  // Convert to ms
+                    firstReadFrame = index
+                }
+            }
+            
             for barcode in barcodes {
                 let format = getMLKitFormatName(barcode.format)
                 let text = barcode.rawValue ?? ""
                 let key = "\(format):\(text)"
+                decodedText = text
+                
+                // Calculate bounding box area
+                let frame = barcode.frame
+                boundingBoxArea = Int(frame.width * frame.height)
                 
                 if !uniqueBarcodes.contains(key) {
                     uniqueBarcodes.insert(key)
                     print("[MLKit Video] Frame \(index): Barcode - \(format): \(text)")
                     
-                    let endTime = Date()
-                    let decodeTime = Int64(endTime.timeIntervalSince(startTime) * 1000)
-                    
                     let info = BarcodeInfo(
                         format: format,
                         text: text,
-                        decodeTimeMs: decodeTime,
+                        decodeTimeMs: Int64(latencyMs),
                         frameIndex: index
                     )
                     result.barcodes.append(info)
                 }
             }
             
-            let endTime = Date()
-            totalTime += Int64(endTime.timeIntervalSince(startTime) * 1000)
+            // Log entry for this frame
+            let logEntry = FrameLogEntry(
+                frameID: index,
+                timestamp: frameData.timestamp,
+                sdkName: "MLKit",
+                success: frameSuccess,
+                decodedText: decodedText,
+                latencyMs: latencyMs,
+                boundingBoxArea: boundingBoxArea
+            )
+            logEntries.append(logEntry)
         }
         
         result.totalTimeMs = totalTime
-        print("[MLKit Video] Video benchmark completed. Total time: \(totalTime)ms, unique barcodes: \(uniqueBarcodes.count)")
-        return result
+        result.successfulDecodes = successfulFrames
+        result.framesWithBarcodeVisible = frames.count  // Assume all frames may contain barcode
+        result.timeToFirstReadMs = firstReadTime
+        result.firstReadFrameIndex = firstReadFrame
+        
+        print("[MLKit Video] Video benchmark completed. Total time: \(totalTime)ms, unique barcodes: \(uniqueBarcodes.count), successful frames: \(successfulFrames), TTFR: \(firstReadTime ?? -1)ms")
+        return (result, logEntries)
     }
     
     private func getMLKitFormatName(_ format: MLKitBarcodeScanning.BarcodeFormat) -> String {

@@ -153,22 +153,152 @@ struct BenchmarkResultView: View {
     
     // MARK: - Video Stats Section
     private var videoStatsSection: some View {
-        HStack {
-            Image(systemName: "film")
-                .foregroundColor(.benchmarkPurple)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Video Benchmark Metrics")
+                .font(.headline)
             
-            Text("Frames Processed:")
+            // Frames Processed
+            HStack {
+                Image(systemName: "film")
+                    .foregroundColor(.benchmarkPurple)
+                
+                Text("Total Frames Processed:")
+                    .font(.subheadline)
+                
+                Spacer()
+                
+                Text("\(viewModel.dynamsoftResult?.framesProcessed ?? 0)")
+                    .font(.subheadline)
+                    .fontWeight(.bold)
+            }
+            
+            Divider()
+            
+            // Success Rate Section
+            Text("Success Rate (Decodes / Frames)")
                 .font(.subheadline)
+                .foregroundColor(.secondary)
             
-            Text("\(viewModel.dynamsoftResult?.framesProcessed ?? 0)")
+            HStack(spacing: 20) {
+                successRateCard(
+                    title: "Dynamsoft",
+                    result: viewModel.dynamsoftResult,
+                    color: .dynamsoftBlue
+                )
+                
+                successRateCard(
+                    title: "MLKit",
+                    result: viewModel.mlkitResult,
+                    color: .mlkitGreen
+                )
+            }
+            
+            Divider()
+            
+            // Time-to-First-Read (TTFR) Section
+            Text("Time-to-First-Read (TTFR)")
                 .font(.subheadline)
-                .fontWeight(.bold)
+                .foregroundColor(.secondary)
             
-            Spacer()
+            HStack(spacing: 20) {
+                ttfrCard(
+                    title: "Dynamsoft",
+                    result: viewModel.dynamsoftResult,
+                    color: .dynamsoftBlue
+                )
+                
+                ttfrCard(
+                    title: "MLKit",
+                    result: viewModel.mlkitResult,
+                    color: .mlkitGreen
+                )
+            }
+            
+            // CSV Export Button
+            if let csvURL = viewModel.csvFileURL {
+                Divider()
+                csvExportSection(csvURL: csvURL)
+            }
         }
         .padding()
         .background(Color(.systemGray6))
         .cornerRadius(12)
+    }
+    
+    private func successRateCard(title: String, result: BenchmarkResult?, color: Color) -> some View {
+        VStack(spacing: 8) {
+            let successRate = result?.successRate ?? 0
+            let successCount = result?.successfulDecodes ?? 0
+            let totalFrames = result?.framesProcessed ?? 0
+            
+            Text(String(format: "%.1f%%", successRate))
+                .font(.system(size: 24, weight: .bold))
+                .foregroundColor(color)
+            
+            Text("\(successCount)/\(totalFrames)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(Color(.systemBackground))
+        .cornerRadius(12)
+    }
+    
+    private func ttfrCard(title: String, result: BenchmarkResult?, color: Color) -> some View {
+        VStack(spacing: 8) {
+            Text(result?.ttfrFormatted ?? "N/A")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundColor(color)
+            
+            if let frameIndex = result?.firstReadFrameIndex {
+                Text("Frame #\(frameIndex)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                Text("No decode")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(Color(.systemBackground))
+        .cornerRadius(12)
+    }
+    
+    private func csvExportSection(csvURL: URL) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("CSV Log Saved")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            
+            HStack {
+                Image(systemName: "doc.text")
+                    .foregroundColor(.benchmarkPurple)
+                
+                Text(csvURL.lastPathComponent)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                
+                Spacer()
+                
+                ShareLink(item: csvURL) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
     }
     
     // MARK: - Barcode Lists Section
