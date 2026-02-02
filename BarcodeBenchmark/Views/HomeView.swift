@@ -15,11 +15,11 @@ struct HomeView: View {
                 // Header
                 headerSection
                 
-                // Resolution Selection
-                resolutionSection
+                // Benchmark Section
+                benchmarkSection
                 
-                // Benchmark Options
-                benchmarkCardsSection
+                // Camera Scanners Section
+                cameraScannersSection
                 
                 // Web Server Section
                 webServerSection
@@ -49,26 +49,15 @@ struct HomeView: View {
         .padding(.top)
     }
     
-    // MARK: - Resolution Section
-    private var resolutionSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Camera Resolution")
-                .font(.headline)
-            
-            Picker("Resolution", selection: $viewModel.resolutionIndex) {
-                Text("720P").tag(0)
-                Text("1080P").tag(1)
-            }
-            .pickerStyle(.segmented)
-        }
-        .padding()
-        .background(Color(.systemGray6))
-        .cornerRadius(12)
-    }
+
     
-    // MARK: - Benchmark Cards Section
-    private var benchmarkCardsSection: some View {
-        VStack(spacing: 16) {
+    // MARK: - Benchmark Section
+    private var benchmarkSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Benchmarks")
+                .font(.title2)
+                .fontWeight(.bold)
+            
             // Image and Video Benchmark Row
             HStack(spacing: 16) {
                 NavigationLink(destination: ImageBenchmarkView()) {
@@ -83,12 +72,52 @@ struct HomeView: View {
                 NavigationLink(destination: VideoBenchmarkView()) {
                     BenchmarkCard(
                         title: "Video",
-                        subtitle: "Benchmark",
+                        subtitle: "Frame-by-Frame",
                         icon: "video",
                         color: .benchmarkPurple
                     )
                 }
             }
+            
+            // Video Stream Benchmark Row
+            HStack(spacing: 16) {
+                NavigationLink(destination: VideoStreamBenchmarkView()) {
+                    BenchmarkCard(
+                        title: "Video Stream",
+                        subtitle: "Native Processing",
+                        icon: "video.bubble.left",
+                        color: .benchmarkPurple
+                    )
+                }
+                
+                // Empty placeholder for symmetry
+                Color.clear
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+    
+    // MARK: - Camera Scanners Section
+    private var cameraScannersSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Camera Scanners")
+                .font(.title2)
+                .fontWeight(.bold)
+            
+            // Resolution Selection
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Camera Resolution")
+                    .font(.headline)
+                
+                Picker("Resolution", selection: $viewModel.resolutionIndex) {
+                    Text("720P").tag(0)
+                    Text("1080P").tag(1)
+                }
+                .pickerStyle(.segmented)
+            }
+            .padding()
+            .background(Color(.systemGray6))
+            .cornerRadius(12)
             
             // Camera Scanners Row
             HStack(spacing: 16) {

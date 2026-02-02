@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		3211CF322F3071D20056EEE1 /* VideoStreamBenchmarkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3211CF312F3071D20056EEE1 /* VideoStreamBenchmarkView.swift */; };
 		323B4A3B2F276ED900F7170D /* DynamsoftBarcodeReader in Frameworks */ = {isa = PBXBuildFile; productRef = 323B4A3A2F276ED900F7170D /* DynamsoftBarcodeReader */; };
 		325B84732F27623000C66900 /* ImageBenchmarkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 325B84652F27623000C66900 /* ImageBenchmarkView.swift */; };
 		325B84742F27623000C66900 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 325B84642F27623000C66900 /* HomeView.swift */; };
@@ -27,6 +28,7 @@
 /* Begin PBXFileReference section */
 		18C2ACB965DBE2EFA49FC2D8 /* Pods-BarcodeBenchmark.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-BarcodeBenchmark.release.xcconfig"; path = "Target Support Files/Pods-BarcodeBenchmark/Pods-BarcodeBenchmark.release.xcconfig"; sourceTree = "<group>"; };
 		1A0000000000000000000010 /* BarcodeBenchmark.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BarcodeBenchmark.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3211CF312F3071D20056EEE1 /* VideoStreamBenchmarkView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoStreamBenchmarkView.swift; sourceTree = "<group>"; };
 		325B845D2F27623000C66900 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		325B845F2F27623000C66900 /* BenchmarkWebServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BenchmarkWebServer.swift; sourceTree = "<group>"; };
 		325B84602F27623000C66900 /* FileUtil.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileUtil.swift; sourceTree = "<group>"; };
@@ -109,6 +111,7 @@
 		325B84682F27623000C66900 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				3211CF312F3071D20056EEE1 /* VideoStreamBenchmarkView.swift */,
 				325B84622F27623000C66900 /* BenchmarkResultView.swift */,
 				325B84632F27623000C66900 /* DynamsoftScannerView.swift */,
 				325B84642F27623000C66900 /* HomeView.swift */,
@@ -282,6 +285,7 @@
 				325B84762F27623000C66900 /* BenchmarkWebServer.swift in Sources */,
 				325B84772F27623000C66900 /* BarcodeBenchmarkApp.swift in Sources */,
 				325B84782F27623000C66900 /* DynamsoftScannerView.swift in Sources */,
+				3211CF322F3071D20056EEE1 /* VideoStreamBenchmarkView.swift in Sources */,
 				325B84792F27623000C66900 /* FileUtil.swift in Sources */,
 				325B847A2F27623000C66900 /* Models.swift in Sources */,
 				325B847C2F27623000C66900 /* VideoBenchmarkView.swift in Sources */,
