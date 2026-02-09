@@ -8,7 +8,7 @@ let package = Package(
     ],
     dependencies: [
         // Dynamsoft Capture Vision Bundle SDK v11
-        .package(url: "https://github.com/Dynamsoft/capture-vision-spm.git", from: "11.0.0"),
+        .package(url: "https://github.com/Dynamsoft/capture-vision-spm.git", from: "3.4.0"),
     ],
     targets: [
         .target(

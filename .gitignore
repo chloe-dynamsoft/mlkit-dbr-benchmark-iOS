@@ -1,2 +1,64 @@
-.build/.lock
+
+# macOS system files
 .DS_Store
+
+# Xcode
+*.xcuserstate
+*.xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
+*.xcscmblueprint
+*.moved-aside
+DerivedData/
+
+# SwiftPM
+.build/
+Package.resolved
+
+# CocoaPods
+Pods/
+Podfile.lock
+Pods.xcodeproj/
+
+# Carthage
+Carthage/
+
+# User settings
+*.swp
+*.swo
+*.tmp
+*.bak
+*~
+
+# Logs
+*.log
+
+# App data
+*.sqlite3
+*.sqlite
+*.db
+*.realm
+
+# Crash reports
+*.crash
+
+# Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
+fastlane/test_output
+
+# Other
+*.orig
+*.orig.*
+*.rej
+
+# Ignore local podspecs
+Pods/Local Podspecs/

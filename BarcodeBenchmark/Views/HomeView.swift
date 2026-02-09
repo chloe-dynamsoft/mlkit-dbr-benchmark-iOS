@@ -1,13 +1,9 @@
 import SwiftUI
-import Network
 
 struct HomeView: View {
     @EnvironmentObject var viewModel: MainViewModel
-    @State private var isServerRunning = false
-    @State private var serverURL = ""
-    @State private var webServer: BenchmarkWebServer?
-    
-    private let serverPort: UInt16 = 8080
+    @State private var showingExportSheet = false
+    @State private var exportURLs: [URL] = []
     
     var body: some View {
         ScrollView {
@@ -15,14 +11,16 @@ struct HomeView: View {
                 // Header
                 headerSection
                 
+                // Session History Section
+                if !viewModel.historyStore.sessions.isEmpty {
+                    sessionHistorySection
+                }
+                
                 // Benchmark Section
                 benchmarkSection
                 
                 // Camera Scanners Section
                 cameraScannersSection
-                
-                // Web Server Section
-                webServerSection
                 
                 Spacer(minLength: 40)
             }
@@ -30,8 +28,10 @@ struct HomeView: View {
         }
         .navigationTitle("Barcode Benchmark")
         .navigationBarTitleDisplayMode(.large)
-        .onDisappear {
-            stopWebServer()
+        .sheet(isPresented: $showingExportSheet) {
+            if !exportURLs.isEmpty {
+                ActivityViewControllerWrapper(activityItems: exportURLs)
+            }
         }
     }
     
@@ -49,7 +49,120 @@ struct HomeView: View {
         .padding(.top)
     }
     
-
+    // MARK: - Session History Section
+    private var sessionHistorySection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Session History")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                
+                Spacer()
+                
+                Button(action: {
+                    viewModel.historyStore.clearHistory()
+                }) {
+                    Text("Clear")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+            }
+            
+            VStack(alignment: .leading, spacing: 8) {
+                Text("\(viewModel.historyStore.sessions.count) sessions recorded")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                
+                // List recent sessions
+                ForEach(viewModel.historyStore.sessions.suffix(3).reversed()) { session in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.videoName)
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            
+                            Text(session.date, style: .date)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        Button(action: {
+                            exportSingleSession(session)
+                        }) {
+                            Image(systemName: "square.and.arrow.up")
+                                .foregroundColor(.benchmarkPurple)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                
+                if viewModel.historyStore.sessions.count > 3 {
+                    Text("+ \(viewModel.historyStore.sessions.count - 3) more sessions")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
+                Divider()
+                
+                Button(action: {
+                    exportAllSessions()
+                }) {
+                    Label("Export All Sessions", systemImage: "folder.badge.gear")
+                        .font(.subheadline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.benchmarkPurple)
+            }
+            .padding()
+            .background(Color(.systemGray6))
+            .cornerRadius(12)
+        }
+    }
+    
+    private func exportSingleSession(_ session: BenchmarkSession) {
+        // Create temp file for single session
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
+        let dateStr = dateFormatter.string(from: session.date)
+        let filename = "benchmark_\(session.videoName)_\(dateStr).csv"
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        
+        do {
+            try session.csvContent.write(to: fileURL, atomically: true, encoding: .utf8)
+            exportURLs = [fileURL]
+            showingExportSheet = true
+        } catch {
+            print("Failed to export session: \(error)")
+        }
+    }
+    
+    private func exportAllSessions() {
+        var urls: [URL] = []
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
+        
+        for session in viewModel.historyStore.sessions {
+            let dateStr = dateFormatter.string(from: session.date)
+            let sanitizedName = session.videoName.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "/", with: "_")
+            let filename = "benchmark_\(sanitizedName)_\(dateStr).csv"
+            let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+            
+            do {
+                try session.csvContent.write(to: fileURL, atomically: true, encoding: .utf8)
+                urls.append(fileURL)
+            } catch {
+                print("Failed to write session \(session.videoName): \(error)")
+            }
+        }
+        
+        if !urls.isEmpty {
+            exportURLs = urls
+            showingExportSheet = true
+        }
+    }
     
     // MARK: - Benchmark Section
     private var benchmarkSection: some View {
@@ -142,99 +255,7 @@ struct HomeView: View {
         }
     }
     
-    // MARK: - Web Server Section
-    private var webServerSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Web Server")
-                    .font(.headline)
-                
-                Spacer()
-                
-                Toggle("", isOn: $isServerRunning)
-                    .labelsHidden()
-                    .onChange(of: isServerRunning) { newValue in
-                        if newValue {
-                            startWebServer()
-                        } else {
-                            stopWebServer()
-                        }
-                    }
-            }
-            
-            if isServerRunning && !serverURL.isEmpty {
-                HStack {
-                    Image(systemName: "network")
-                        .foregroundColor(.green)
-                    
-                    Text(serverURL)
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundColor(.primary)
-                    
-                    Spacer()
-                    
-                    Button {
-                        UIPasteboard.general.string = serverURL
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                    }
-                }
-                .padding(.vertical, 8)
-                .padding(.horizontal, 12)
-                .background(Color(.systemGray5))
-                .cornerRadius(8)
-            }
-        }
-        .padding()
-        .background(Color(.systemGray6))
-        .cornerRadius(12)
-    }
-    
-    // MARK: - Web Server Methods
-    private func startWebServer() {
-        let ipAddress = getLocalIPAddress()
-        serverURL = "http://\(ipAddress):\(serverPort)"
-        webServer = BenchmarkWebServer(port: serverPort)
-        webServer?.start()
-        print("Web server started: \(serverURL)")
-    }
-    
-    private func stopWebServer() {
-        webServer?.stop()
-        webServer = nil
-        serverURL = ""
-        print("Web server stopped")
-    }
-    
-    private func getLocalIPAddress() -> String {
-        var address: String = "localhost"
-        var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        
-        if getifaddrs(&ifaddr) == 0 {
-            var ptr = ifaddr
-            while ptr != nil {
-                defer { ptr = ptr?.pointee.ifa_next }
-                
-                guard let interface = ptr?.pointee else { continue }
-                let addrFamily = interface.ifa_addr.pointee.sa_family
-                
-                if addrFamily == UInt8(AF_INET) {
-                    let name = String(cString: interface.ifa_name)
-                    if name == "en0" || name == "en1" {
-                        var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                        getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
-                                    &hostname, socklen_t(hostname.count),
-                                    nil, socklen_t(0), NI_NUMERICHOST)
-                        address = String(cString: hostname)
-                        break
-                    }
-                }
-            }
-            freeifaddrs(ifaddr)
-        }
-        
-        return address
-    }
+
 }
 
 // MARK: - Benchmark Card Component
@@ -279,4 +300,16 @@ struct BenchmarkCard: View {
         HomeView()
             .environmentObject(MainViewModel())
     }
+}
+
+// MARK: - Activity View Controller Wrapper for Share Sheet
+struct ActivityViewControllerWrapper: UIViewControllerRepresentable {
+    let activityItems: [Any]
+    
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+        return controller
+    }
+    
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

@@ -1,11 +1,10 @@
 import SwiftUI
 import PhotosUI
 import AVFoundation
-import DynamsoftCaptureVisionBundle
-import MLKitBarcodeScanning
-import MLKitVision
-import CoreImage
+import Photos
 
+/// View for selecting a video, importing annotations, and running the barcode
+/// benchmark through both Dynamsoft and MLKit video-stream processors.
 struct VideoStreamBenchmarkView: View {
     @EnvironmentObject var viewModel: MainViewModel
     @State private var selectedVideoURL: URL?
@@ -16,23 +15,20 @@ struct VideoStreamBenchmarkView: View {
     @State private var loadingStatus = ""
     @State private var showResults = false
     @State private var isCancelled = false
+    @State private var isImportingAnnotations = false
     
     var body: some View {
         VStack(spacing: 20) {
-            // Video Preview Area
             videoPreviewArea
             
-            // Video Info
             if selectedVideoURL != nil {
                 videoInfoSection
             }
             
-            // Progress Section
             if isProcessing {
                 progressSection
             }
             
-            // Action Buttons
             actionButtons
             
             Spacer()
@@ -40,8 +36,23 @@ struct VideoStreamBenchmarkView: View {
         .padding()
         .navigationTitle("Video Stream Benchmark")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: { isImportingAnnotations = true }) {
+                    Image(systemName: "square.and.arrow.down")
+                    Text("Import Annotations")
+                }
+            }
+        }
+        .fileImporter(
+            isPresented: $isImportingAnnotations,
+            allowedContentTypes: [.commaSeparatedText, .plainText],
+            allowsMultipleSelection: false
+        ) { result in
+            handleAnnotationImport(result)
+        }
         .navigationDestination(isPresented: $showResults) {
-            BenchmarkResultView()
+            BenchmarkResultViewWithHeader()
         }
         .onChange(of: selectedItem) { newItem in
             Task {
@@ -110,6 +121,17 @@ struct VideoStreamBenchmarkView: View {
             Text("Stream mode allows SDKs to skip frames for optimal performance")
                 .font(.caption)
                 .foregroundColor(.secondary)
+            
+            if !viewModel.annotations.isEmpty {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Text("\(viewModel.annotations.count) Annotations Loaded")
+                        .font(.caption)
+                        .foregroundColor(.primary)
+                }
+                .padding(.top, 4)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
@@ -178,28 +200,35 @@ struct VideoStreamBenchmarkView: View {
         }
         
         do {
-            // Load the video data
             guard let data = try await item.loadTransferable(type: Data.self) else {
                 print("Failed to load video data")
                 return
             }
             
-            // Save to temporary location
             let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
             try data.write(to: tempURL)
             
-            // Store filename from the item's suggestion
+            var fileName = "video.mp4"
             if let identifier = item.itemIdentifier {
-                await MainActor.run {
-                    viewModel.sourceFileName = identifier.components(separatedBy: "/").last ?? "video.mp4"
+                let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+                if let asset = fetchResult.firstObject {
+                    let resources = PHAssetResource.assetResources(for: asset)
+                    if let resource = resources.first {
+                        fileName = resource.originalFilename
+                    }
+                } else {
+                    let components = identifier.components(separatedBy: "/")
+                    if let lastComponent = components.last, !lastComponent.isEmpty {
+                        fileName = lastComponent
+                    }
                 }
             }
             
             await MainActor.run {
+                viewModel.sourceFileName = fileName
                 selectedVideoURL = tempURL
             }
             
-            // Load thumbnail and duration
             let asset = AVAsset(url: tempURL)
             let duration = try await asset.load(.duration)
             let durationSeconds = CMTimeGetSeconds(duration)
@@ -234,6 +263,42 @@ struct VideoStreamBenchmarkView: View {
         }
     }
     
+    // MARK: - Handle Annotation Import
+    private func handleAnnotationImport(_ result: Result<[URL], Error>) {
+        do {
+            guard let selectedFile: URL = try result.get().first else { return }
+            if selectedFile.startAccessingSecurityScopedResource() {
+                defer { selectedFile.stopAccessingSecurityScopedResource() }
+                
+                let content = try String(contentsOf: selectedFile)
+                let lines = content.components(separatedBy: .newlines)
+                
+                var newAnnotations: [Annotation] = []
+                for line in lines.dropFirst() { // First line is header "format,value"
+                    let parts = line.components(separatedBy: ",")
+                    if parts.count >= 2 {
+                        let quoteCharacters = CharacterSet(charactersIn: "\"\"\"'`«»\u{201C}\u{201D}")
+                        let format = parts[0].trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: quoteCharacters).joined()
+                        let value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: quoteCharacters).joined()
+                        if !format.isEmpty && !value.isEmpty {
+                            newAnnotations.append(Annotation(format: format, value: value))
+                        }
+                    }
+                }
+                
+                if !newAnnotations.isEmpty {
+                    Task {
+                        await MainActor.run {
+                            viewModel.annotations = newAnnotations
+                        }
+                    }
+                }
+            }
+        } catch {
+            print("Error reading annotation file: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Start Stream Benchmark
     private func startStreamBenchmark() async {
         guard let videoURL = selectedVideoURL else { return }
@@ -241,50 +306,77 @@ struct VideoStreamBenchmarkView: View {
         isCancelled = false
         isProcessing = true
         
-        // Clear previous results and set benchmark mode
         await MainActor.run {
             viewModel.benchmarkMode = "video"
             viewModel.dynamsoftResult = nil
             viewModel.mlkitResult = nil
+            
+            let videoName = viewModel.sourceFileName ?? "video"
+            viewModel.csvLogger = VideoBenchmarkCSVLogger(videoName: videoName, annotations: viewModel.annotations)
         }
         
-        // Run both SDK benchmarks with video stream processing
-        await runDynamsoftStreamBenchmark(videoURL: videoURL)
+        // Run Dynamsoft
+        await runSDKBenchmark(
+            label: "Dynamsoft",
+            processor: { url, annotations, logger in
+                let p = DynamsoftVideoStreamProcessor()
+                return try await p.processVideoStream(url: url, annotations: annotations, csvLogger: logger, cancelled: { self.isCancelled })
+            },
+            videoURL: videoURL,
+            assignResult: { result in viewModel.dynamsoftResult = result }
+        )
         
-        if isCancelled {
-            await MainActor.run {
-                isProcessing = false
-            }
+        guard !isCancelled else {
+            await MainActor.run { isProcessing = false }
             return
         }
         
-        await runMLKitStreamBenchmark(videoURL: videoURL)
+        // Run MLKit
+        await runSDKBenchmark(
+            label: "MLKit",
+            processor: { url, annotations, logger in
+                let p = MLKitVideoStreamProcessor()
+                return try await p.processVideoStream(url: url, annotations: annotations, csvLogger: logger, cancelled: { self.isCancelled })
+            },
+            videoURL: videoURL,
+            assignResult: { result in viewModel.mlkitResult = result }
+        )
         
         if !isCancelled {
-            // Show results
             await MainActor.run {
+                if let csvLogger = viewModel.csvLogger, let csvURL = csvLogger.saveToFile() {
+                    viewModel.csvFileURL = csvURL
+                    
+                    let session = BenchmarkSession(
+                        videoName: viewModel.sourceFileName ?? "video",
+                        summary: "Completed",
+                        csvContent: csvLogger.getCSVContent()
+                    )
+                    viewModel.historyStore.addSession(session)
+                }
                 showResults = true
             }
         }
         
-        await MainActor.run {
-            isProcessing = false
-        }
+        await MainActor.run { isProcessing = false }
     }
     
-    // MARK: - Dynamsoft Stream Benchmark
-    private func runDynamsoftStreamBenchmark(videoURL: URL) async {
+    // MARK: - Generic SDK Runner
+    private func runSDKBenchmark(
+        label: String,
+        processor: @escaping (URL, [Annotation], VideoBenchmarkCSVLogger?) async throws -> VideoStreamResult,
+        videoURL: URL,
+        assignResult: @escaping (BenchmarkResult) -> Void
+    ) async {
         await MainActor.run {
-            loadingStatus = "Testing Dynamsoft (Stream Mode)..."
+            loadingStatus = "Testing \(label) (Stream Mode)..."
         }
         
-        let processor = DynamsoftVideoStreamProcessor()
-        
         do {
-            let result = try await processor.processVideoStream(url: videoURL, cancelled: { isCancelled })
+            let result = try await processor(videoURL, viewModel.annotations, viewModel.csvLogger)
             
             await MainActor.run {
-                let benchmarkResult = BenchmarkResult(engineName: "Dynamsoft")
+                let benchmarkResult = BenchmarkResult(engineName: label)
                 benchmarkResult.totalTimeMs = Int64(result.totalTime * 1000)
                 benchmarkResult.framesProcessed = result.framesProcessed
                 benchmarkResult.framesWithBarcodeVisible = result.framesProcessed
@@ -292,294 +384,12 @@ struct VideoStreamBenchmarkView: View {
                 benchmarkResult.successfulDecodes = result.successfulDecodes
                 benchmarkResult.timeToFirstReadMs = result.timeToFirstReadMs
                 benchmarkResult.firstReadFrameIndex = result.firstReadFrameIndex
-                viewModel.dynamsoftResult = benchmarkResult
-                print("[Dynamsoft Stream] Completed: \(result.barcodes.count) barcodes in \(String(format: "%.2f", result.totalTime))s, frames processed: \(result.framesProcessed)")
+                assignResult(benchmarkResult)
+                print("[\(label) Stream] Completed: \(result.barcodes.count) barcodes in \(String(format: "%.2f", result.totalTime))s, frames processed: \(result.framesProcessed)")
             }
         } catch {
-            print("[Dynamsoft Stream] Error: \(error)")
+            print("[\(label) Stream] Error: \(error)")
         }
-    }
-    
-    // MARK: - MLKit Stream Benchmark
-    private func runMLKitStreamBenchmark(videoURL: URL) async {
-        await MainActor.run {
-            loadingStatus = "Testing MLKit (Stream Mode)..."
-        }
-        
-        let processor = MLKitVideoStreamProcessor()
-        
-        do {
-            let result = try await processor.processVideoStream(url: videoURL, cancelled: { isCancelled })
-            
-            await MainActor.run {
-                let benchmarkResult = BenchmarkResult(engineName: "MLKit")
-                benchmarkResult.totalTimeMs = Int64(result.totalTime * 1000)
-                benchmarkResult.framesProcessed = result.framesProcessed
-                benchmarkResult.framesWithBarcodeVisible = result.framesProcessed
-                benchmarkResult.barcodes = result.barcodes
-                benchmarkResult.successfulDecodes = result.successfulDecodes
-                benchmarkResult.timeToFirstReadMs = result.timeToFirstReadMs
-                benchmarkResult.firstReadFrameIndex = result.firstReadFrameIndex
-                viewModel.mlkitResult = benchmarkResult
-                print("[MLKit Stream] Completed: \(result.barcodes.count) barcodes in \(String(format: "%.2f", result.totalTime))s, frames processed: \(result.framesProcessed)")
-            }
-        } catch {
-            print("[MLKit Stream] Error: \(error)")
-        }
-    }
-}
-
-// MARK: - Video Stream Result
-struct VideoStreamResult {
-    let barcodes: [BarcodeInfo]
-    let totalTime: Double
-    let framesProcessed: Int
-    let successfulDecodes: Int
-    let timeToFirstReadMs: Double?
-    let firstReadFrameIndex: Int?
-}
-
-// MARK: - Dynamsoft Video Stream Processor
-class DynamsoftVideoStreamProcessor: NSObject {
-    private var detectedBarcodes: [BarcodeInfo] = []
-    private var uniqueBarcodeKeys: Set<String> = []
-    private var startTime: Date?
-    private var framesProcessed = 0
-    private var successfulDecodes = 0
-    private var timeToFirstReadMs: Double? = nil
-    private var firstReadFrameIndex: Int? = nil
-    
-    func processVideoStream(url: URL, cancelled: @escaping () -> Bool) async throws -> VideoStreamResult {
-        startTime = Date()
-        detectedBarcodes.removeAll()
-        uniqueBarcodeKeys.removeAll()
-        framesProcessed = 0
-        successfulDecodes = 0
-        timeToFirstReadMs = nil
-        firstReadFrameIndex = nil
-        
-        // Setup Dynamsoft
-        let cvr = CaptureVisionRouter()
-        
-        // Create video asset and reader
-        let asset = AVAsset(url: url)
-        let reader = try AVAssetReader(asset: asset)
-        
-        let tracks = try await asset.loadTracks(withMediaType: .video)
-        guard let videoTrack = tracks.first else {
-            throw NSError(domain: "VideoStreamProcessor", code: -1, userInfo: [NSLocalizedDescriptionKey: "No video track found"])
-        }
-        
-        let outputSettings: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-        ]
-        
-        let readerOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: outputSettings)
-        readerOutput.alwaysCopiesSampleData = false
-        
-        if reader.canAdd(readerOutput) {
-            reader.add(readerOutput)
-        }
-        
-        reader.startReading()
-        
-        var frameCount = 0
-        let captureInterval = 1 // Process all frames, let SDK handle frame queue optimization
-        
-        while reader.status == .reading {
-            if cancelled() {
-                reader.cancelReading()
-                break
-            }
-            
-            autoreleasepool {
-                guard let sampleBuffer = readerOutput.copyNextSampleBuffer() else { return }
-                
-                frameCount += 1
-                
-                // Skip frames to simulate streaming behavior
-                if frameCount % captureInterval != 0 {
-                    return
-                }
-                
-                framesProcessed += 1
-                
-                // Convert sample buffer to UIImage for Dynamsoft
-                if let uiImage = imageFromSampleBuffer(sampleBuffer) {
-                    let capturedResult = cvr.captureFromImage(uiImage, templateName: PresetTemplate.readBarcodes.rawValue)
-                    
-                    if let decodedBarcodes = capturedResult.decodedBarcodesResult, 
-                       let items = decodedBarcodes.items, !items.isEmpty {
-                        successfulDecodes += 1
-                        
-                        // Track Time-to-First-Read
-                        if timeToFirstReadMs == nil, let start = startTime {
-                            timeToFirstReadMs = Date().timeIntervalSince(start) * 1000
-                            firstReadFrameIndex = framesProcessed
-                        }
-                        
-                        for item in items {
-                            let key = "\(item.formatString):\(item.text)"
-                            if !uniqueBarcodeKeys.contains(key) {
-                                uniqueBarcodeKeys.insert(key)
-                                let info = BarcodeInfo(
-                                    format: item.formatString,
-                                    text: item.text,
-                                    decodeTimeMs: 0
-                                )
-                                detectedBarcodes.append(info)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        let totalTime = Date().timeIntervalSince(startTime ?? Date())
-        return VideoStreamResult(
-            barcodes: detectedBarcodes,
-            totalTime: totalTime,
-            framesProcessed: framesProcessed,
-            successfulDecodes: successfulDecodes,
-            timeToFirstReadMs: timeToFirstReadMs,
-            firstReadFrameIndex: firstReadFrameIndex
-        )
-    }
-    
-    private func imageFromSampleBuffer(_ sampleBuffer: CMSampleBuffer) -> UIImage? {
-        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return nil }
-        
-        let ciImage = CIImage(cvPixelBuffer: imageBuffer)
-        let context = CIContext()
-        
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
-        
-        return UIImage(cgImage: cgImage)
-    }
-}
-
-// MARK: - MLKit Video Stream Processor
-class MLKitVideoStreamProcessor {
-    private lazy var barcodeScanner: BarcodeScanner = {
-        let options = BarcodeScannerOptions(formats: [.all])
-        return BarcodeScanner.barcodeScanner(options: options)
-    }()
-    
-    func processVideoStream(url: URL, cancelled: @escaping () -> Bool) async throws -> VideoStreamResult {
-        var detectedBarcodes: [BarcodeInfo] = []
-        var uniqueBarcodeKeys: Set<String> = []
-        let startTime = Date()
-        var framesProcessed = 0
-        var successfulDecodes = 0
-        var timeToFirstReadMs: Double? = nil
-        var firstReadFrameIndex: Int? = nil
-        
-        // Create video asset and reader
-        let asset = AVAsset(url: url)
-        let reader = try AVAssetReader(asset: asset)
-        
-        let tracks = try await asset.loadTracks(withMediaType: .video)
-        guard let videoTrack = tracks.first else {
-            throw NSError(domain: "VideoStreamProcessor", code: -1, userInfo: [NSLocalizedDescriptionKey: "No video track found"])
-        }
-        
-        let outputSettings: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-        ]
-        
-        let readerOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: outputSettings)
-        readerOutput.alwaysCopiesSampleData = false
-        
-        if reader.canAdd(readerOutput) {
-            reader.add(readerOutput)
-        }
-        
-        reader.startReading()
-        
-        var frameCount = 0
-        let captureInterval = 1 // Process all frames, let SDK handle frame queue optimization
-        
-        while reader.status == .reading {
-            if cancelled() {
-                reader.cancelReading()
-                break
-            }
-            
-            autoreleasepool {
-                guard let sampleBuffer = readerOutput.copyNextSampleBuffer() else { return }
-                
-                frameCount += 1
-                
-                // Skip frames to simulate streaming behavior
-                if frameCount % captureInterval != 0 {
-                    return
-                }
-                
-                framesProcessed += 1
-                
-                let visionImage = VisionImage(buffer: sampleBuffer)
-                visionImage.orientation = .up
-                
-                do {
-                    let barcodes = try self.barcodeScanner.results(in: visionImage)
-                    
-                    if !barcodes.isEmpty {
-                        successfulDecodes += 1
-                        
-                        // Track Time-to-First-Read
-                        if timeToFirstReadMs == nil {
-                            timeToFirstReadMs = Date().timeIntervalSince(startTime) * 1000
-                            firstReadFrameIndex = framesProcessed
-                        }
-                    }
-                    
-                    for barcode in barcodes {
-                        let format = self.getMLKitFormatName(barcode.format)
-                        let text = barcode.rawValue ?? ""
-                        let key = "\(format):\(text)"
-                        
-                        if !uniqueBarcodeKeys.contains(key) {
-                            uniqueBarcodeKeys.insert(key)
-                            let info = BarcodeInfo(
-                                format: format,
-                                text: text,
-                                decodeTimeMs: 0
-                            )
-                            detectedBarcodes.append(info)
-                        }
-                    }
-                } catch {
-                    // Continue processing on error
-                }
-            }
-        }
-        
-        let totalTime = Date().timeIntervalSince(startTime)
-        return VideoStreamResult(
-            barcodes: detectedBarcodes,
-            totalTime: totalTime,
-            framesProcessed: framesProcessed,
-            successfulDecodes: successfulDecodes,
-            timeToFirstReadMs: timeToFirstReadMs,
-            firstReadFrameIndex: firstReadFrameIndex
-        )
-    }
-    
-    private func getMLKitFormatName(_ format: MLKitBarcodeScanning.BarcodeFormat) -> String {
-        if format == .code128 { return "CODE_128" }
-        if format == .code39 { return "CODE_39" }
-        if format == .code93 { return "CODE_93" }
-        if format == .codaBar { return "CODABAR" }
-        if format == .dataMatrix { return "DATA_MATRIX" }
-        if format == .EAN13 { return "EAN_13" }
-        if format == .EAN8 { return "EAN_8" }
-        if format == .ITF { return "ITF" }
-        if format == .qrCode { return "QR_CODE" }
-        if format == .UPCA { return "UPC_A" }
-        if format == .UPCE { return "UPC_E" }
-        if format == .PDF417 { return "PDF417" }
-        if format == .aztec { return "AZTEC" }
-        return "UNKNOWN"
     }
 }
 

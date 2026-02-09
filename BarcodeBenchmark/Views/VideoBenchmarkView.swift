@@ -439,7 +439,9 @@ struct VideoBenchmarkView: View {
                 success: frameSuccess,
                 decodedText: decodedText,
                 latencyMs: latencyMs,
-                boundingBoxArea: boundingBoxArea
+                boundingBoxArea: boundingBoxArea,
+                correctCount: 0,
+                misreadCount: 0
             )
             logEntries.append(logEntry)
         }
@@ -572,7 +574,9 @@ struct VideoBenchmarkView: View {
                 success: frameSuccess,
                 decodedText: decodedText,
                 latencyMs: latencyMs,
-                boundingBoxArea: boundingBoxArea
+                boundingBoxArea: boundingBoxArea,
+                correctCount: 0,
+                misreadCount: 0
             )
             logEntries.append(logEntry)
         }
