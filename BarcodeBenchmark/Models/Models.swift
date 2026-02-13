@@ -100,6 +100,7 @@ class HistoryStore: ObservableObject {
 class VideoBenchmarkCSVLogger {
     private var entries: [FrameLogEntry] = []
     private let logFileName: String
+    private let videoName: String
     private let annotations: [Annotation]
     private var summaryStats: [String: (totalFrames: Int, totalTime: Double, correctFrames: Int, misreadFrames: Int)] = [:]
     /// Global tally: decoded value → count of distinct frames that produced it, per SDK.
@@ -118,6 +119,7 @@ class VideoBenchmarkCSVLogger {
         let sanitizedVideoName = videoName.replacingOccurrences(of: " ", with: "_")
             .replacingOccurrences(of: "/", with: "_")
         self.logFileName = "benchmark_\(sanitizedVideoName)_\(timestamp).csv"
+        self.videoName = videoName
         self.annotations = annotations
     }
     
@@ -221,22 +223,23 @@ class VideoBenchmarkCSVLogger {
         var content = ""
         
         // Generate Summary Header using Global Tally (multiset)
-        if !annotations.isEmpty {
-            let uniqueAnno = uniqueAnnotationCount
-            let totalAnno = annotations.count
-            content += "SUMMARY HEADER (Global Tally) — Annotations: \(totalAnno) total (\(uniqueAnno) unique)\n"
-            content += "SDK, Unique_Found, Annotations_Matched, Misreads, Accuracy%, Misread_Rate%, TTFR (ms)\n"
+        let uniqueAnno = uniqueAnnotationCount
+        let totalAnno = annotations.count
+        content += "SUMMARY HEADER (Global Tally) — Annotations: \(totalAnno) total (\(uniqueAnno) unique)\n"
+        content += "SDK, Frames, Unique_Found, Annotations_Matched, Misreads, Accuracy%, Misread_Rate%, TTFR (ms)\n"
+        
+        for (sdk, stats) in summaryStats.sorted(by: { $0.key < $1.key }) {
+            let tally = calculateGlobalTally(sdkName: sdk)
+            let foundCount = foundBags[sdk]?.count ?? 0
+            let ttfr = ttfrInfo[sdk]
+            let ttfrStr = ttfr != nil ? String(format: "%.1f (Frame #%d)", ttfr!.timestampMs, ttfr!.frameID) : "N/A"
+            let matchedStr = totalAnno > 0 ? "\(tally.successCount)/\(totalAnno)" : "N/A"
+            let accuracyStr = totalAnno > 0 ? String(format: "%.2f", tally.accuracy) : "N/A"
+            let misreadRateStr = foundCount > 0 ? String(format: "%.2f", tally.misreadRate) : "N/A"
             
-            for (sdk, stats) in summaryStats.sorted(by: { $0.key < $1.key }) {
-                let tally = calculateGlobalTally(sdkName: sdk)
-                let foundCount = foundBags[sdk]?.count ?? 0  // unique values found
-                let ttfr = ttfrInfo[sdk]
-                let ttfrStr = ttfr != nil ? String(format: "%.1f (Frame #%d)", ttfr!.timestampMs, ttfr!.frameID) : "N/A"
-                
-                content += "\(sdk), \(foundCount), \(tally.successCount)/\(totalAnno), \(tally.misreadCount), \(String(format: "%.2f", tally.accuracy)), \(String(format: "%.2f", tally.misreadRate)), \(ttfrStr)\n"
-            }
-            content += "\n"
+            content += "\(sdk), \(stats.totalFrames), \(foundCount), \(matchedStr), \(tally.misreadCount), \(accuracyStr), \(misreadRateStr), \(ttfrStr)\n"
         }
+        content += "\n"
         
         content += FrameLogEntry.csvHeader + "\n"
         for entry in entries.sorted(by: { ($0.frameID, $0.sdkName) < ($1.frameID, $1.sdkName) }) {
@@ -270,7 +273,7 @@ class VideoBenchmarkCSVLogger {
         
         print("")
         print("╔══════════════════════════════════════════════════════════════")
-        print("║  DEBUG TALLY")
+        print("║  DEBUG TALLY — \(videoName)")
         print("╠══════════════════════════════════════════════════════════════")
         
         // 1. Annotation list
@@ -280,49 +283,10 @@ class VideoBenchmarkCSVLogger {
             print("║    [\(count)x] \(value)")
         }
         
-        // 2. Per-SDK found list with match/misread labels
-        for sdk in foundBags.keys.sorted() {
-            let sdkBag = foundBags[sdk] ?? [:]
-            let tally = calculateGlobalTally(sdkName: sdk)
-            
-            print("║")
-            print("║  \(sdk) — Found \(sdkBag.count) unique values:")
-            for (value, count) in sdkBag.sorted(by: { $0.key < $1.key }) {
-                if let annoCount = annoBag[value] {
-                    let credited = min(annoCount, count)
-                    if credited == annoCount {
-                        print("║    ✅ MATCH    [\(count)x found, \(annoCount)x expected → \(credited) credited] \(value)")
-                    } else {
-                        print("║    ⚠️  PARTIAL [\(count)x found, \(annoCount)x expected → \(credited) credited] \(value)")
-                    }
-                } else {
-                    print("║    ❌ MISREAD  [\(count)x found, not in annotations] \(value)")
-                }
-            }
-            
-            // Values in annotations but never found by this SDK
-            let missingFromSDK = annoBag.filter { sdkBag[$0.key] == nil }
-            if !missingFromSDK.isEmpty {
-                print("║    ── Not found by \(sdk):")
-                for (value, count) in missingFromSDK.sorted(by: { $0.key < $1.key }) {
-                    print("║    ⬜ MISSING  [\(count)x expected] \(value)")
-                }
-            }
-            
-            print("║")
-            print("║    Matched: \(tally.successCount)/\(totalAnno)  Misreads: \(tally.misreadCount)  Accuracy: \(String(format: "%.2f", tally.accuracy))%  Misread Rate: \(String(format: "%.2f", tally.misreadRate))%")
-            if let ttfr = ttfrInfo[sdk] {
-                print("║    TTFR: \(String(format: "%.1f", ttfr.timestampMs)) ms (Frame #\(ttfr.frameID))")
-            } else {
-                print("║    TTFR: N/A (annotations never fully matched)")
-            }
-        }
-        
-        // 3. Summary header lines
+        // 2. Summary header (SDK results)
         print("║")
-        print("║  SUMMARY HEADER:")
         for line in getSummaryHeader() {
-            print("║    \(line)")
+            print("║  \(line)")
         }
         print("╚══════════════════════════════════════════════════════════════")
         print("")
@@ -335,12 +299,14 @@ class VideoBenchmarkCSVLogger {
     func getSummaryHeader() -> [String] {
         var lines: [String] = []
         
-        if !annotations.isEmpty {
-            let uniqueAnno = uniqueAnnotationCount
-            let totalAnno = annotations.count
-            lines.append("Annotations: \(totalAnno) total (\(uniqueAnno) unique)")
-            lines.append("")
-            
+        let uniqueAnno = uniqueAnnotationCount
+        let totalAnno = annotations.count
+        lines.append("Annotations: \(totalAnno) total (\(uniqueAnno) unique)")
+        lines.append("")
+        
+        if summaryStats.isEmpty {
+            lines.append("No SDK results recorded.")
+        } else {
             for (sdk, stats) in summaryStats.sorted(by: { $0.key < $1.key }) {
                 let tally = calculateGlobalTally(sdkName: sdk)
                 let foundCount = foundBags[sdk]?.count ?? 0  // unique values found
@@ -348,13 +314,14 @@ class VideoBenchmarkCSVLogger {
                 let ttfrStr = ttfr != nil ? String(format: "%.1f ms (Frame #%d)", ttfr!.timestampMs, ttfr!.frameID) : "N/A"
                 
                 lines.append("\(sdk):")
+                lines.append("  Frames Processed: \(stats.totalFrames)")
                 lines.append("  Unique Values Found: \(foundCount)")
-                lines.append("  Misreads: \(tally.misreadCount) out of \(foundCount)")
-                lines.append("  Misread Rate: \(String(format: "%.2f", tally.misreadRate))%")
-                lines.append("  Annotations Matched: \(tally.successCount)/\(totalAnno)")
-
-                lines.append("  Accuracy: \(String(format: "%.2f", tally.accuracy))%")
-
+                if totalAnno > 0 {
+                    lines.append("  Misreads: \(tally.misreadCount) out of \(foundCount)")
+                    lines.append("  Misread Rate: \(String(format: "%.2f", tally.misreadRate))%")
+                    lines.append("  Annotations Matched: \(tally.successCount)/\(totalAnno)")
+                    lines.append("  Accuracy: \(String(format: "%.2f", tally.accuracy))%")
+                }
                 lines.append("  TTFR: \(ttfrStr)")
                 lines.append("")
             }

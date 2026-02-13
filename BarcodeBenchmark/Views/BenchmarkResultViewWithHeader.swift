@@ -170,6 +170,12 @@ struct BenchmarkResultViewWithHeader: View {
     // MARK: - Back Button
     private var backButton: some View {
         Button {
+            // Clear annotations and reset state
+            viewModel.annotations.removeAll()
+            viewModel.sourceFileName = nil
+            viewModel.csvLogger = nil
+            viewModel.csvFileURL = nil
+            
             if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                let window = windowScene.windows.first,
                let rootViewController = window.rootViewController {

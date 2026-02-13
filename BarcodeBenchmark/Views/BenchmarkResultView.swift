@@ -364,6 +364,10 @@ struct BenchmarkResultView: View {
     // MARK: - Back Button
     private var backButton: some View {
         Button {
+            // Clear annotations and reset state
+            viewModel.annotations.removeAll()
+            viewModel.sourceFileName = nil
+            
             // Pop to root (home)
             if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                let window = windowScene.windows.first,

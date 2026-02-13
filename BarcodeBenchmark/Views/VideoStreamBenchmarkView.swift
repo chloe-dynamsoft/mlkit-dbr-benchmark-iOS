@@ -1,25 +1,28 @@
 import SwiftUI
-import PhotosUI
 import AVFoundation
-import Photos
+import UniformTypeIdentifiers
 
 /// View for selecting a video, importing annotations, and running the barcode
 /// benchmark through both Dynamsoft and MLKit video-stream processors.
 struct VideoStreamBenchmarkView: View {
     @EnvironmentObject var viewModel: MainViewModel
     @State private var selectedVideoURL: URL?
-    @State private var selectedItem: PhotosPickerItem?
     @State private var videoThumbnail: UIImage?
     @State private var videoDuration: TimeInterval = 0
     @State private var isProcessing = false
     @State private var loadingStatus = ""
     @State private var showResults = false
     @State private var isCancelled = false
-    @State private var isImportingAnnotations = false
+    @State private var showingAnnotationImporter = false
+    @State private var showingVideoImporter = false
     
     var body: some View {
         VStack(spacing: 20) {
             videoPreviewArea
+            
+            if !viewModel.annotations.isEmpty {
+                annotationStatusSection
+            }
             
             if selectedVideoURL != nil {
                 videoInfoSection
@@ -38,27 +41,46 @@ struct VideoStreamBenchmarkView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: { isImportingAnnotations = true }) {
+                Button(action: { showingAnnotationImporter = true }) {
                     Image(systemName: "square.and.arrow.down")
                     Text("Import Annotations")
                 }
             }
         }
-        .fileImporter(
-            isPresented: $isImportingAnnotations,
-            allowedContentTypes: [.commaSeparatedText, .plainText],
-            allowsMultipleSelection: false
-        ) { result in
-            handleAnnotationImport(result)
-        }
         .navigationDestination(isPresented: $showResults) {
             BenchmarkResultViewWithHeader()
         }
-        .onChange(of: selectedItem) { newItem in
-            Task {
-                await loadSelectedVideo(from: newItem)
+        .sheet(isPresented: $showingAnnotationImporter) {
+            AnnotationFilePickerView { annotations in
+                viewModel.annotations = annotations
+                print("[VideoStreamBenchmark] Loaded \(annotations.count) annotations:")
+                for a in annotations {
+                    print("[VideoStreamBenchmark]   \(a.format): \(a.value)")
+                }
             }
         }
+        .sheet(isPresented: $showingVideoImporter) {
+            VideoFilePickerView { url, fileName in
+                Task {
+                    await handlePickedVideo(url: url, fileName: fileName)
+                }
+            }
+        }
+    }
+    
+    // MARK: - Annotation Status Section
+    private var annotationStatusSection: some View {
+        HStack {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(.green)
+            Text("\(viewModel.annotations.count) Annotations Loaded")
+                .font(.subheadline)
+                .foregroundColor(.primary)
+            Spacer()
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
     }
     
     // MARK: - Video Preview Area
@@ -121,17 +143,6 @@ struct VideoStreamBenchmarkView: View {
             Text("Stream mode allows SDKs to skip frames for optimal performance")
                 .font(.caption)
                 .foregroundColor(.secondary)
-            
-            if !viewModel.annotations.isEmpty {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                    Text("\(viewModel.annotations.count) Annotations Loaded")
-                        .font(.caption)
-                        .foregroundColor(.primary)
-                }
-                .padding(.top, 4)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
@@ -161,7 +172,7 @@ struct VideoStreamBenchmarkView: View {
     // MARK: - Action Buttons
     private var actionButtons: some View {
         VStack(spacing: 12) {
-            PhotosPicker(selection: $selectedItem, matching: .videos) {
+            Button(action: { showingVideoImporter = true }) {
                 Label("Select Video", systemImage: "video.badge.plus")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
@@ -191,60 +202,31 @@ struct VideoStreamBenchmarkView: View {
         }
     }
     
-    // MARK: - Load Selected Video
-    private func loadSelectedVideo(from item: PhotosPickerItem?) async {
-        guard let item = item else { return }
+    // MARK: - Handle Picked Video
+    private func handlePickedVideo(url: URL, fileName: String) async {
+        print("[VideoStreamBenchmark] Imported video filename: \(fileName)")
         
         await MainActor.run {
-            loadingStatus = "Loading video..."
+            viewModel.sourceFileName = fileName
+            selectedVideoURL = url
         }
         
         do {
-            guard let data = try await item.loadTransferable(type: Data.self) else {
-                print("Failed to load video data")
-                return
-            }
-            
-            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
-            try data.write(to: tempURL)
-            
-            var fileName = "video.mp4"
-            if let identifier = item.itemIdentifier {
-                let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
-                if let asset = fetchResult.firstObject {
-                    let resources = PHAssetResource.assetResources(for: asset)
-                    if let resource = resources.first {
-                        fileName = resource.originalFilename
-                    }
-                } else {
-                    let components = identifier.components(separatedBy: "/")
-                    if let lastComponent = components.last, !lastComponent.isEmpty {
-                        fileName = lastComponent
-                    }
-                }
-            }
-            
-            await MainActor.run {
-                viewModel.sourceFileName = fileName
-                selectedVideoURL = tempURL
-            }
-            
-            let asset = AVAsset(url: tempURL)
+            let asset = AVAsset(url: url)
             let duration = try await asset.load(.duration)
             let durationSeconds = CMTimeGetSeconds(duration)
             
             await MainActor.run {
                 videoDuration = durationSeconds
             }
-            
-            if let thumbnail = await generateThumbnail(from: tempURL) {
-                await MainActor.run {
-                    videoThumbnail = thumbnail
-                }
-            }
-            
         } catch {
-            print("Error loading video: \(error)")
+            print("[VideoStreamBenchmark] Error loading duration: \(error)")
+        }
+        
+        if let thumbnail = await generateThumbnail(from: url) {
+            await MainActor.run {
+                videoThumbnail = thumbnail
+            }
         }
     }
     
@@ -263,42 +245,6 @@ struct VideoStreamBenchmarkView: View {
         }
     }
     
-    // MARK: - Handle Annotation Import
-    private func handleAnnotationImport(_ result: Result<[URL], Error>) {
-        do {
-            guard let selectedFile: URL = try result.get().first else { return }
-            if selectedFile.startAccessingSecurityScopedResource() {
-                defer { selectedFile.stopAccessingSecurityScopedResource() }
-                
-                let content = try String(contentsOf: selectedFile)
-                let lines = content.components(separatedBy: .newlines)
-                
-                var newAnnotations: [Annotation] = []
-                for line in lines.dropFirst() { // First line is header "format,value"
-                    let parts = line.components(separatedBy: ",")
-                    if parts.count >= 2 {
-                        let quoteCharacters = CharacterSet(charactersIn: "\"\"\"'`«»\u{201C}\u{201D}")
-                        let format = parts[0].trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: quoteCharacters).joined()
-                        let value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: quoteCharacters).joined()
-                        if !format.isEmpty && !value.isEmpty {
-                            newAnnotations.append(Annotation(format: format, value: value))
-                        }
-                    }
-                }
-                
-                if !newAnnotations.isEmpty {
-                    Task {
-                        await MainActor.run {
-                            viewModel.annotations = newAnnotations
-                        }
-                    }
-                }
-            }
-        } catch {
-            print("Error reading annotation file: \(error.localizedDescription)")
-        }
-    }
-
     // MARK: - Start Stream Benchmark
     private func startStreamBenchmark() async {
         guard let videoURL = selectedVideoURL else { return }
@@ -389,6 +335,122 @@ struct VideoStreamBenchmarkView: View {
             }
         } catch {
             print("[\(label) Stream] Error: \(error)")
+        }
+    }
+}
+
+// MARK: - Annotation File Picker (UIDocumentPicker wrapper)
+struct AnnotationFilePickerView: UIViewControllerRepresentable {
+    @Environment(\.dismiss) private var dismiss
+    var onPick: ([Annotation]) -> Void
+    
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.commaSeparatedText, .plainText])
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let parent: AnnotationFilePickerView
+        init(_ parent: AnnotationFilePickerView) { self.parent = parent }
+        
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            guard url.startAccessingSecurityScopedResource() else {
+                print("[AnnotationPicker] Cannot access security scoped resource")
+                return
+            }
+            defer { url.stopAccessingSecurityScopedResource() }
+            
+            do {
+                let content = try String(contentsOf: url)
+                let lines = content.components(separatedBy: .newlines)
+                
+                var newAnnotations: [Annotation] = []
+                for line in lines.dropFirst() { // First line is header "format,value"
+                    let parts = line.components(separatedBy: ",")
+                    if parts.count >= 2 {
+                        let quoteCharacters = CharacterSet(charactersIn: "\"\"\"'`«»\u{201C}\u{201D}")
+                        let format = parts[0].trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: quoteCharacters).joined()
+                        let value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: quoteCharacters).joined()
+                        if !format.isEmpty && !value.isEmpty {
+                            newAnnotations.append(Annotation(format: format, value: value))
+                        }
+                    }
+                }
+                
+                print("[AnnotationPicker] Parsed \(newAnnotations.count) annotations from \(url.lastPathComponent)")
+                DispatchQueue.main.async {
+                    self.parent.onPick(newAnnotations)
+                    self.parent.dismiss()
+                }
+            } catch {
+                print("[AnnotationPicker] Error reading file: \(error)")
+            }
+        }
+        
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            parent.dismiss()
+        }
+    }
+}
+
+// MARK: - Video File Picker (UIDocumentPicker wrapper)
+struct VideoFilePickerView: UIViewControllerRepresentable {
+    @Environment(\.dismiss) private var dismiss
+    var onPick: (URL, String) -> Void
+    
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.movie, .video, .mpeg4Movie, .quickTimeMovie, .avi])
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let parent: VideoFilePickerView
+        init(_ parent: VideoFilePickerView) { self.parent = parent }
+        
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            guard url.startAccessingSecurityScopedResource() else {
+                print("[VideoPicker] Cannot access security scoped resource")
+                return
+            }
+            defer { url.stopAccessingSecurityScopedResource() }
+            
+            let fileName = url.lastPathComponent
+            print("[VideoPicker] Selected: \(url.path)")
+            print("[VideoPicker] Filename: \(fileName)")
+            
+            // Copy to temp directory so we have unrestricted access
+            let ext = url.pathExtension.isEmpty ? "mp4" : url.pathExtension
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".\(ext)")
+            do {
+                try FileManager.default.copyItem(at: url, to: tempURL)
+            } catch {
+                print("[VideoPicker] Error copying video: \(error)")
+                return
+            }
+            
+            DispatchQueue.main.async {
+                self.parent.onPick(tempURL, fileName)
+                self.parent.dismiss()
+            }
+        }
+        
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            parent.dismiss()
         }
     }
 }

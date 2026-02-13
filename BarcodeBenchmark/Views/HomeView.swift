@@ -2,8 +2,8 @@ import SwiftUI
 
 struct HomeView: View {
     @EnvironmentObject var viewModel: MainViewModel
-    @State private var showingExportSheet = false
     @State private var exportURLs: [URL] = []
+    @State private var showingShareSheet = false
     
     var body: some View {
         ScrollView {
@@ -28,10 +28,8 @@ struct HomeView: View {
         }
         .navigationTitle("Barcode Benchmark")
         .navigationBarTitleDisplayMode(.large)
-        .sheet(isPresented: $showingExportSheet) {
-            if !exportURLs.isEmpty {
-                ActivityViewControllerWrapper(activityItems: exportURLs)
-            }
+        .sheet(isPresented: $showingShareSheet) {
+            ShareSheetView(urls: exportURLs)
         }
     }
     
@@ -133,7 +131,7 @@ struct HomeView: View {
         do {
             try session.csvContent.write(to: fileURL, atomically: true, encoding: .utf8)
             exportURLs = [fileURL]
-            showingExportSheet = true
+            showingShareSheet = true
         } catch {
             print("Failed to export session: \(error)")
         }
@@ -160,7 +158,7 @@ struct HomeView: View {
         
         if !urls.isEmpty {
             exportURLs = urls
-            showingExportSheet = true
+            showingShareSheet = true
         }
     }
     
@@ -302,14 +300,27 @@ struct BenchmarkCard: View {
     }
 }
 
-// MARK: - Activity View Controller Wrapper for Share Sheet
-struct ActivityViewControllerWrapper: UIViewControllerRepresentable {
-    let activityItems: [Any]
+// MARK: - Share Sheet View
+struct ShareSheetView: UIViewControllerRepresentable {
+    let urls: [URL]
+    @Environment(\.dismiss) private var dismiss
     
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        let controller = UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
-        return controller
+    func makeUIViewController(context: Context) -> UIViewController {
+        let controller = UIActivityViewController(activityItems: urls, applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, _, _, _ in
+            dismiss()
+        }
+        
+        // Wrap in a container so the sheet has proper sizing
+        let wrapper = UIViewController()
+        wrapper.view.backgroundColor = .clear
+        
+        // Present the activity controller after a brief delay to allow the sheet to appear
+        DispatchQueue.main.async {
+            wrapper.present(controller, animated: true)
+        }
+        return wrapper
     }
     
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
 }
